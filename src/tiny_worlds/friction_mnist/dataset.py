@@ -12,7 +12,7 @@ from typing import NamedTuple
 import numpy as np
 from numpy.typing import NDArray
 
-from .mnist import MNIST_DIR, load_mnist
+from .mnist import load_mnist
 
 type Float32Array = NDArray[np.float32]
 type Int8Array = NDArray[np.int8]
@@ -21,11 +21,11 @@ type UInt8Array = NDArray[np.uint8]
 
 
 class FrictionMNISTConfig(NamedTuple):
-    num_frames: int = 100
+    num_frames: int = 200
     canvas_size: int = 64
     digit_size: int = 28
-    speed_range: tuple[float, float] = (1.0, 3.0)
-    friction_range: tuple[float, float] = (0.88, 0.95)
+    speed_range: tuple[float, float] = (1.5, 3.0)
+    friction_range: tuple[float, float] = (0.96, 0.98)
     restitution_range: tuple[float, float] = (0.7, 0.95)
     stop_speed: float = 0.05
     train_fraction: float = 0.8
@@ -45,6 +45,7 @@ class FrictionMNIST(NamedTuple):
     velocity: Float32Array  # (N, T, 2, 2), pixels/frame
     friction: Float32Array  # (N, 2), per-frame damping
     restitution: Float32Array  # (N, 2), wall energy retention
+    bounce_count: Int32Array  # (N,), wall bounces per sequence
     stop_time: Int32Array  # (N,), first frame with both digits at rest
     final_position: Float32Array  # (N, 2, 2)
     split: Int8Array  # (N,), 0=train, 1=val, 2=test
@@ -92,9 +93,10 @@ def _simulate(
     Float32Array,
     Float32Array,
     Int32Array,
+    Int32Array,
     Float32Array,
 ]:
-    """Simulate the full sequences and record stop times."""
+    """Simulate the full sequences and record bounces and stop times."""
     max_position = float(config.canvas_size - config.digit_size)
     position, velocity, friction, restitution = _sample_motion(rng, config, num_samples)
     positions = np.empty((num_samples, config.num_frames, 2, 2), np.float32)
@@ -115,6 +117,9 @@ def _simulate(
         stopped = np.all(velocity == 0.0, axis=(1, 2))
         stop_time = np.where((stop_time < 0) & stopped, frame, stop_time)
 
+    signs = np.sign(velocities)
+    reversals = (signs[:, 1:] != signs[:, :-1]) & (signs[:, 1:] != 0.0) & (signs[:, :-1] != 0.0)
+    bounce_count = reversals.sum(axis=(1, 2, 3)).astype(np.int32)
     stop_time = np.where(stop_time < 0, config.num_frames - 1, stop_time)
     final_position = positions[np.arange(num_samples), stop_time]
     return (
@@ -122,6 +127,7 @@ def _simulate(
         velocities,
         friction[..., 0],
         restitution[..., 0],
+        bounce_count,
         stop_time,
         final_position,
     )
@@ -182,14 +188,14 @@ def generate_dataset(
     seed: int = 0,
     num_samples: int = 2_000,
     *,
+    mnist_dir: Path,
     config: FrictionMNISTConfig = DEFAULT_CONFIG,
-    mnist_dir: Path = MNIST_DIR,
 ) -> FrictionMNIST:
     """Generate a friction-Moving-MNIST pool in memory."""
     images, labels = load_mnist(mnist_dir)
     rng = np.random.default_rng(seed)
     digit_index = rng.integers(0, len(images), size=(num_samples, 2), dtype=np.int32)
-    positions, velocities, friction, restitution, stop_time, final = _simulate(rng, config, num_samples)
+    positions, velocities, friction, restitution, bounce_count, stop_time, final = _simulate(rng, config, num_samples)
     frames = _render(images, digit_index, positions, config)
     split = _split(num_samples, config)
     order = rng.permutation(num_samples)
@@ -201,6 +207,7 @@ def generate_dataset(
         velocity=velocities[order],
         friction=friction[order],
         restitution=restitution[order],
+        bounce_count=bounce_count[order],
         stop_time=stop_time[order],
         final_position=final[order],
         split=split[order],

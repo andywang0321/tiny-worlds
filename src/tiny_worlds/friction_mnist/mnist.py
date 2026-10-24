@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gzip
 import struct
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +12,13 @@ import numpy as np
 from numpy.typing import NDArray
 
 type UInt8Array = NDArray[np.uint8]
-MNIST_DIR = Path.home() / "data" / "mnist"
+
+MNIST_FILES = {
+    "train-images-idx3-ubyte.gz": "https://ossci-datasets.s3.amazonaws.com/mnist/train-images-idx3-ubyte.gz",
+    "train-labels-idx1-ubyte.gz": "https://ossci-datasets.s3.amazonaws.com/mnist/train-labels-idx1-ubyte.gz",
+    "t10k-images-idx3-ubyte.gz": "https://ossci-datasets.s3.amazonaws.com/mnist/t10k-images-idx3-ubyte.gz",
+    "t10k-labels-idx1-ubyte.gz": "https://ossci-datasets.s3.amazonaws.com/mnist/t10k-labels-idx1-ubyte.gz",
+}
 
 
 def _open_binary(path: Path) -> Any:
@@ -46,9 +53,17 @@ def _find_pair(directory: Path, prefix: str) -> tuple[Path, Path] | None:
     return (images[0], labels[0]) if images and labels else None
 
 
-def load_mnist(
-    mnist_dir: Path = MNIST_DIR,
-) -> tuple[UInt8Array, UInt8Array]:
+def download_mnist(destination: Path) -> Path:
+    """Download the IDX files into ``destination`` if needed."""
+    destination.mkdir(parents=True, exist_ok=True)
+    for filename, url in MNIST_FILES.items():
+        path = destination / filename
+        if not path.exists():
+            urllib.request.urlretrieve(url, path)
+    return destination
+
+
+def load_mnist(mnist_dir: Path) -> tuple[UInt8Array, UInt8Array]:
     pairs = [pair for pair in (_find_pair(mnist_dir, "train"), _find_pair(mnist_dir, "t10k")) if pair is not None]
     if not pairs:
         raise FileNotFoundError(f"No MNIST IDX files found in {mnist_dir}.")

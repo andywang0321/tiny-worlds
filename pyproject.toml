@@ -13,6 +13,7 @@ friction-mnist = [
     "matplotlib>=3.11.2",
 ]
 twin-t = [
+    "numcodecs>=0.17.1",
     "numpy>=2.5.4",
     "pygame>=2.6.1",
     "pymunk>=7.3.1",

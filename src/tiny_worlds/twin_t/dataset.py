@@ -42,6 +42,11 @@ class Episode:
     split: int
     steps: int
 
+    @property
+    def obs(self) -> NDArray[np.uint8]:
+        """Alias for ``img``, matching the raw trial key."""
+        return self.img
+
 
 _ARRAY_KEYS = {name: f"data/{name}" for name in ZARR_DATA_ARRAYS}
 _ARRAY_KEYS |= {name: f"meta/{name}" for name in ZARR_META_ARRAYS}

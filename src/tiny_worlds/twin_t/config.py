@@ -33,7 +33,7 @@ class TwinTConfig:
 
     target_bounds: Bounds = (90.0, 90.0, 422.0, 422.0)
     target_min_separation: float = 180.0
-    target_orientations: tuple[float, ...] = (0.0, math.pi / 2.0, math.pi, 3.0 * math.pi / 2.0)
+    target_angle_range: tuple[float, float] = (-math.pi, math.pi)
 
     # ``block_bounds`` and ``agent_bounds`` are bounds on the geometric center. The
     # block is placed so its geometric center is sampled here, then its body pose is
@@ -72,8 +72,9 @@ class TwinTConfig:
             ("agent_bounds", self.agent_bounds),
         ):
             _check_bounds(name, bounds, self.workspace)
-        if len(self.target_orientations) != 4:
-            raise ValueError("target_orientations must have four entries")
+        low_angle, high_angle = self.target_angle_range
+        if not (-math.pi <= low_angle < high_angle <= math.pi):
+            raise ValueError("target_angle_range must be an ordered range inside [-pi, pi]")
         if self.target_min_separation <= 0:
             raise ValueError("target_min_separation must be positive")
         if self.max_agent_speed <= 0:

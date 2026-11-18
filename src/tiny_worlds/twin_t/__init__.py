@@ -6,14 +6,14 @@ from .types import Command, StepInfo, TwinTObservation, TwinTState
 
 __all__ = [
     "COLLECTOR_CONFIG",
-    "Command",
     "DEFAULT_CONFIG",
     "GREEN",
     "PINK",
     "SCHEMA_VERSION",
-    "StepInfo",
     "TARGET_COLORS",
     "TARGET_NAMES",
+    "Command",
+    "StepInfo",
     "TwinTConfig",
     "TwinTObservation",
     "TwinTState",

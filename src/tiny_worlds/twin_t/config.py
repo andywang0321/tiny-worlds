@@ -88,7 +88,7 @@ class TwinTConfig:
     @property
     def substeps(self) -> int:
         """Physics steps per control step."""
-        return int(round(1.0 / (self.physics_dt * self.control_hz)))
+        return round(1.0 / (self.physics_dt * self.control_hz))
 
     @property
     def pixels_per_step(self) -> float:

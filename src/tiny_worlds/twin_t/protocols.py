@@ -44,6 +44,10 @@ class TwinTEnvironment(Protocol):
         """Change the commanded target mid-episode."""
         ...
 
+    def pause(self) -> None:
+        """Freeze agent motion; called when a teleop drag is released."""
+        ...
+
     def state(self) -> TwinTState:
         """Return the current simulator state."""
         ...

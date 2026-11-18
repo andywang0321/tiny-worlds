@@ -56,6 +56,8 @@ obs, reward, terminated, truncated, info = env.step(action)
   block on the wrong target can be pushed off.
 - With `command=None`, success and termination use either target.
 - `set_command` changes the command mid-episode for the step-50 switch.
+- `pause()` zeroes the agent velocity; the collector calls it when a drag is released so
+  a paused trial resumes from rest.
 - `state()` returns `TwinTState`; `state().as_vector()` is
   `[agent_x, agent_y, block_x, block_y, block_angle]`, the `reset(state=...)` format.
   `reset(state=..., target_poses=...)` reproduces a held-out layout; `target_poses` is

@@ -89,6 +89,8 @@ def test_two_hundred_resets_keep_every_shape_disjoint_and_inside() -> None:
         assert np.linalg.norm(centers[0] - centers[1]) >= DEFAULT_CONFIG.target_min_separation - 1e-3
         assert _in_bounds(centers[0], DEFAULT_CONFIG.target_bounds)
         assert _in_bounds(centers[1], DEFAULT_CONFIG.target_bounds)
+        orientations = DEFAULT_CONFIG.target_orientations
+        assert all(any(np.isclose(pose[2], angle) for angle in orientations) for pose in targets)
         assert _in_bounds(center_from_pose(info.block_pose, SCALE), DEFAULT_CONFIG.block_bounds)
         assert _in_bounds(obs.agent_pos, DEFAULT_CONFIG.agent_bounds)
         target_polys = [tee_polygon(pose, SCALE) for pose in targets]

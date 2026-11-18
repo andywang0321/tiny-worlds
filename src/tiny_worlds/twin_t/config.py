@@ -35,7 +35,11 @@ class TwinTConfig:
     target_min_separation: float = 180.0
     target_orientations: tuple[float, ...] = (0.0, math.pi / 2.0, math.pi, 3.0 * math.pi / 2.0)
 
-    block_bounds: Bounds = (100.0, 100.0, 400.0, 400.0)
+    # ``block_bounds`` and ``agent_bounds`` are bounds on the geometric center. The
+    # block is placed so its geometric center is sampled here, then its body pose is
+    # reported in the state. The bounds keep the 120-wide T inside the 5..506 walls for
+    # any continuous block angle.
+    block_bounds: Bounds = (110.0, 110.0, 390.0, 390.0)
     agent_bounds: Bounds = (50.0, 50.0, 450.0, 450.0)
 
     max_agent_speed: float = 250.0

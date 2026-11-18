@@ -68,6 +68,8 @@ ZARR_META_ARRAYS: Final[tuple[str, ...]] = (
     "episode_success",
     "episode_steps",
     "episode_ids",
+    "episode_created",
+    "episode_seed",
     "split",
 )
 

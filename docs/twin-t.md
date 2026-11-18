@@ -108,6 +108,8 @@ meta/episode_target (E,) int8
 meta/episode_success(E,) bool
 meta/episode_steps  (E,) int32
 meta/episode_ids    (E,) S32
+meta/episode_created(E,) float64    unix seconds
+meta/episode_seed   (E,) int64
 meta/split          (E,) int8      0 train, 1 validation, 2 test
 ```
 

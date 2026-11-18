@@ -54,10 +54,11 @@ with load_dataset(Path("dist/twint.zarr.zip")) as dataset:
 unpack(Path("dist/twint.zarr.zip"), Path("unpacked"))
 ```
 
-`T=10` Hz, a 96x96 RGB observation plus the agent position, and a 512x512 workspace.
-The policy observation contains only pixels and the agent position; block pose, target
-poses, coverage, and success are evaluation-only. The full contract, including the raw
-`.npz` trial format and the packed zarr v2 schema, is in [docs/twin-t.md](docs/twin-t.md).
+TwinT runs at 10 Hz with a 96x96 RGB observation plus the agent position and a
+512x512 workspace. The policy observation contains only pixels and the agent position;
+block pose, target poses, coverage, and success are evaluation-only. The full contract,
+including the raw `.npz` trial format and the packed zarr v2 schema, is in
+[docs/twin-t.md](docs/twin-t.md).
 
 The `twint-data-collector` project is the browser teleop front end that writes the raw
 trials and runs `uv run pack`.

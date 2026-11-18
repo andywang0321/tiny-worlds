@@ -54,6 +54,8 @@ obs, reward, terminated, truncated, info = env.step(action)
 - `set_command` changes the command mid-episode for the step-50 switch.
 - `state()` returns `TwinTState`; `state().as_vector()` is
   `[agent_x, agent_y, block_x, block_y, block_angle]`, the `reset(state=...)` format.
+  `reset(state=..., target_poses=...)` reproduces a held-out layout; `target_poses` is
+  `(2, 3)` for `[pink, green]` and is sampled when omitted.
 - `target_poses` is evaluation-only and never enters the observation.
 
 The agent is speed-limited by `max_agent_speed` (default 250 px/s, 25 px per control

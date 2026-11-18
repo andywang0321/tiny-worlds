@@ -24,8 +24,14 @@ class TwinTEnvironment(Protocol):
         seed: int | None = None,
         command: int | None = None,
         state: NDArray[np.floating] | None = None,
+        target_poses: NDArray[np.floating] | None = None,
     ) -> tuple[TwinTObservation, StepInfo]:
-        """Reset the environment and return the first observation and info."""
+        """Reset the environment and return the first observation and info.
+
+        ``state`` is the five-vector ``[agent_x, agent_y, block_x, block_y, block_angle]``.
+        ``target_poses`` is ``(2, 3)`` for ``[pink, green]``; when omitted, targets are
+        sampled. Both are evaluation-only; the policy never sees them.
+        """
         ...
 
     def step(

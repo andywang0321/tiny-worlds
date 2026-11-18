@@ -80,6 +80,17 @@ def test_reset_is_deterministic_for_a_fixed_seed() -> None:
     assert not np.array_equal(info_a.target_poses, info_d.target_poses)
 
 
+def test_target_angles_are_continuous() -> None:
+    env = TwinTEnv()
+    angles = []
+    for seed in range(20):
+        _, info = env.reset(seed=seed)
+        angles.extend(float(angle) for angle in info.target_poses[:, 2])
+    rounded = {round(angle, 6) for angle in angles}
+    assert len(rounded) > 15
+    assert all(-math.pi - 1e-6 <= angle <= math.pi + 1e-6 for angle in angles)
+
+
 def test_two_hundred_resets_keep_every_shape_disjoint_and_inside() -> None:
     env = TwinTEnv()
     for seed in range(200):
@@ -89,8 +100,8 @@ def test_two_hundred_resets_keep_every_shape_disjoint_and_inside() -> None:
         assert np.linalg.norm(centers[0] - centers[1]) >= DEFAULT_CONFIG.target_min_separation - 1e-3
         assert _in_bounds(centers[0], DEFAULT_CONFIG.target_bounds)
         assert _in_bounds(centers[1], DEFAULT_CONFIG.target_bounds)
-        orientations = DEFAULT_CONFIG.target_orientations
-        assert all(any(np.isclose(pose[2], angle) for angle in orientations) for pose in targets)
+        angles = [float(pose[2]) for pose in targets]
+        assert all(-math.pi - 1e-6 <= angle <= math.pi + 1e-6 for angle in angles)
         assert _in_bounds(center_from_pose(info.block_pose, SCALE), DEFAULT_CONFIG.block_bounds)
         assert _in_bounds(obs.agent_pos, DEFAULT_CONFIG.agent_bounds)
         target_polys = [tee_polygon(pose, SCALE) for pose in targets]

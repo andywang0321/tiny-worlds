@@ -17,22 +17,24 @@ uv add --editable "../tiny-worlds[twin-t]"
 | workspace | 512 x 512, walls at 5..506 |
 | agent | circle, radius 15 |
 | block | T, 120 x 120, mass 1, friction 1 |
-| targets | two T's, colors fixed, positions random, four axis-aligned orientations |
+| targets | two T's, colors fixed, positions random, continuous random orientations |
 | control | 10 Hz, 10 physics substeps of 0.01 s |
 | action | agent target position in `[0, 512]^2` |
 | success | block covers the commanded target at least 95% |
 | observation | 96 x 96 RGB plus the agent's 2D position |
 
 Target poses are sampled with geometric centers in `(90, 90, 422, 422)`, a minimum
-center separation of 180, and one of `(0, pi/2, pi, 3*pi/2)`. The block's geometric
-center starts in `(110, 110, 390, 390)` with a continuous angle; the agent starts in
-`(50, 50, 450, 450)`. The stored poses (`target_poses`, `block_pose`) are T body poses
-in the PushT convention, so moving from a sampled center to a pose subtracts the
-rotated local centroid `(0, 40.7)`. Sampling rejects any layout where the block or
-agent overlaps a target, the agent overlaps the block, or the block already covers a
-target. The bounds keep every T inside the walls: the axis-aligned target extents are
-at most 79.3 from its geometric center, and the continuous-angle block extent is at
-most 99.4 from its center.
+center separation of 180, and a continuous orientation in `[-pi, pi]`, the same range as
+the block. The block's geometric center starts in `(110, 110, 390, 390)` with a
+continuous angle; the agent starts in `(50, 50, 450, 450)`. The stored poses
+(`target_poses`, `block_pose`) are T body poses in the PushT convention, so moving from
+a sampled center to a pose subtracts the rotated local centroid `(0, 40.7)`. Sampling
+rejects any layout where a target leaves the walls, the two targets overlap, the block
+or agent overlaps a target, the agent overlaps the block, or the block already covers a
+target. The block bounds keep the block inside the walls at any angle; target samples
+near a corner whose orientation would leave the walls are rejected, so the accepted
+orientation range narrows there. Both T's reach at most 99.4 from their geometric
+center.
 
 `PINK = 0`, `GREEN = 1`. The colors are `#FF4FA3` and `#22C55E`. The prompt names the
 color; the policy sees only the image and its own position.

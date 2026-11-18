@@ -122,10 +122,10 @@ def _sample_targets_once(
     centers = rng.uniform((low_x, low_y), (high_x, high_y), size=(2, 2))
     if np.linalg.norm(centers[0] - centers[1]) < config.target_min_separation:
         return None
-    count = len(config.target_orientations)
-    angles = [config.target_orientations[int(rng.integers(count))] for _ in range(2)]
+    low_angle, high_angle = config.target_angle_range
+    angles = rng.uniform(low_angle, high_angle, size=2)
     poses = np.stack(
-        [pose_from_center(center, angle, config.block_scale) for center, angle in zip(centers, angles)]
+        [pose_from_center(center, float(angle), config.block_scale) for center, angle in zip(centers, angles)]
     )
     return poses if _targets_valid(poses, config) else None
 

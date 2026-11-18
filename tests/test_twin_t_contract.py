@@ -38,7 +38,7 @@ def test_default_config_matches_the_preregistration() -> None:
     assert config.success_threshold == 0.95
     assert config.target_bounds == (90.0, 90.0, 422.0, 422.0)
     assert config.target_min_separation == 180.0
-    assert config.target_orientations == (0.0, math.pi / 2, math.pi, 3 * math.pi / 2)
+    assert config.target_angle_range == (-math.pi, math.pi)
     assert config.substeps == 10
     assert config.pixels_per_step == pytest.approx(25.0)
     assert config.terminate_on == "task"
@@ -55,7 +55,7 @@ def test_config_rejects_bad_values() -> None:
     with pytest.raises(ValueError):
         TwinTConfig(target_bounds=(422.0, 90.0, 90.0, 422.0))
     with pytest.raises(ValueError):
-        TwinTConfig(target_orientations=(0.0,))
+        TwinTConfig(target_angle_range=(0.0, 0.0))
     with pytest.raises(ValueError):
         TwinTConfig(terminate_on="wrong")  # type: ignore[arg-type]
 

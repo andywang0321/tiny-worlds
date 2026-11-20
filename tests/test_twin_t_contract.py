@@ -16,16 +16,21 @@ from tiny_worlds.twin_t import (
     TwinTConfig,
     TwinTObservation,
     TwinTState,
+    schema,
 )
 from tiny_worlds.twin_t.schema import (
+    PACKED_ARRAYS,
+    PACKED_DATA_ARRAYS,
+    PACKED_EPISODE_ARRAYS,
     SCHEMA_VERSION,
     SPLIT_FRACTIONS,
+    SPLIT_NAMES,
     SPLIT_TRAIN,
+    SPLIT_VALIDATION,
     TARGET_COLORS,
     TARGET_NAMES,
     TRIAL_ARRAYS,
-    ZARR_DATA_ARRAYS,
-    ZARR_META_ARRAYS,
+    TRIAL_EPISODE_ARRAYS,
     target_index,
     target_name,
 )
@@ -42,6 +47,7 @@ def test_default_config_matches_the_preregistration() -> None:
     assert config.substeps == 10
     assert config.pixels_per_step == pytest.approx(25.0)
     assert config.terminate_on == "task"
+    assert config.observation_size == 96
 
 
 def test_collector_config_terminates_on_the_command() -> None:
@@ -89,15 +95,30 @@ def test_observation_has_only_pixels_and_agent_position() -> None:
 
 
 def test_schema_constants() -> None:
-    assert SCHEMA_VERSION == 1
+    assert SCHEMA_VERSION == 2
     assert TARGET_NAMES == ("pink", "green")
     assert TARGET_COLORS[PINK] == (255, 79, 163)
     assert TARGET_COLORS[GREEN] == (34, 197, 94)
-    assert SPLIT_FRACTIONS == (0.8, 0.1, 0.1)
     assert SPLIT_TRAIN == 0
-    assert TRIAL_ARRAYS == ("obs", "state", "action", "coverage", "success", "keypoint", "n_contacts")
-    assert "episode_ends" in ZARR_META_ARRAYS
-    assert "img" in ZARR_DATA_ARRAYS
+    assert SPLIT_VALIDATION == 1
+    assert SPLIT_NAMES == ("train", "validation")
+    assert SPLIT_FRACTIONS == (0.9, 0.1)
+    assert TRIAL_ARRAYS == ("state",)
+    assert TRIAL_EPISODE_ARRAYS == ("target", "target_poses")
+    assert PACKED_DATA_ARRAYS == ("state",)
+    assert PACKED_EPISODE_ARRAYS == (
+        "episode_ends",
+        "episode_target",
+        "episode_target_poses",
+        "episode_ids",
+        "episode_created",
+        "episode_seed",
+        "split",
+    )
+    assert PACKED_ARRAYS == ("state",) + PACKED_EPISODE_ARRAYS + ("meta",)
+    assert not hasattr(schema, "OBSERVATION_SIZE")
+    assert not hasattr(schema, "SPLIT_TEST")
+    assert not hasattr(schema, "ZARR_DATA_ARRAYS")
 
 
 def test_target_name_round_trip() -> None:

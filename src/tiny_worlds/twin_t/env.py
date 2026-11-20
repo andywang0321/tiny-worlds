@@ -57,9 +57,7 @@ class TwinTEnv:
             targets = parse_target_poses(target_poses, self.config)
         return agent_pos, block_pose, targets
 
-    def step(
-        self, action: NDArray[np.floating]
-    ) -> tuple[TwinTObservation, float, bool, bool, StepInfo]:
+    def step(self, action: NDArray[np.floating]) -> tuple[TwinTObservation, float, bool, bool, StepInfo]:
         """Run one control step with the agent tracking ``action``."""
         target = _clip_action(action, float(self.config.workspace))
         self._world.step_control(target, self.config.substeps, self.config.max_agent_speed)

@@ -1,4 +1,4 @@
-"""The raw TwinT trial format: one uncompressed ``.npz`` per successful trial."""
+"""The raw TwinT v2 trial format: one uncompressed ``.npz`` per successful trial."""
 
 from __future__ import annotations
 
@@ -17,28 +17,19 @@ from numpy.typing import NDArray
 
 from .schema import (
     GREEN,
-    OBSERVATION_SIZE,
     PINK,
+    SCHEMA_VERSION,
     TARGET_NAMES,
     TRIAL_ARRAYS,
     TRIAL_EPISODE_ARRAYS,
     target_index,
     target_name,
 )
-from .types import BoolArray, FloatArray, Int32Array, UInt8Array
+from .types import FloatArray
 
 _MAX_EPISODE_ID_BYTES = 32
 _SAFE_EPISODE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 _REQUIRED_KEYS = TRIAL_ARRAYS + TRIAL_EPISODE_ARRAYS + ("meta",)
-_FRAME_SPECS: dict[str, tuple[tuple[int, ...], np.dtype[np.generic]]] = {
-    "obs": ((OBSERVATION_SIZE, OBSERVATION_SIZE, 3), np.dtype(np.uint8)),
-    "state": ((5,), np.dtype(np.float32)),
-    "action": ((2,), np.dtype(np.float32)),
-    "coverage": ((2,), np.dtype(np.float32)),
-    "success": ((), np.dtype(np.bool_)),
-    "keypoint": ((9, 2), np.dtype(np.float32)),
-    "n_contacts": ((1,), np.dtype(np.int32)),
-}
 
 
 class TrialInvalid(ValueError):
@@ -84,20 +75,19 @@ class TrialMeta:
 
 @dataclass(frozen=True)
 class Trial:
-    obs: UInt8Array
     state: FloatArray
-    action: FloatArray
-    coverage: FloatArray
-    success: BoolArray
-    keypoint: FloatArray
-    n_contacts: Int32Array
     target: NDArray[np.int8]
     target_poses: FloatArray
     meta: TrialMeta
 
     @property
     def steps(self) -> int:
-        return int(self.obs.shape[0]) - 1
+        return int(self.state.shape[0]) - 1
+
+    @property
+    def action(self) -> FloatArray:
+        """The realized pointer target per row; actions are never stored."""
+        return derive_actions(self.state)
 
 
 @dataclass(frozen=True)
@@ -106,9 +96,21 @@ class TrialRecord:
     episode_id: str
     target: int
     steps: int
-    success: bool
     seed: int
     created_at: str
+
+
+def derive_actions(state: NDArray[np.floating]) -> FloatArray:
+    """Derive BC actions from a state trajectory, copying the terminal row.
+
+    ``action[:-1]`` is the next realized agent position and ``action[-1]`` repeats the
+    terminal one, so the action array has exactly as many rows as ``state``.
+    """
+    rows = np.asarray(state)
+    actions = np.empty((rows.shape[0], 2), dtype=np.float32)
+    actions[:-1] = rows[1:, :2]
+    actions[-1] = rows[-1, :2]
+    return actions
 
 
 def parse_created_at(text: str) -> float:
@@ -146,51 +148,39 @@ def _check_episode_id(episode_id: str) -> None:
 
 
 def validate_trial(trial: Trial) -> None:
-    obs_shape = np.shape(trial.obs)
-    if len(obs_shape) != 4 or obs_shape[0] < 1:
-        raise TrialInvalid(f"obs must have shape (T+1, {OBSERVATION_SIZE}, {OBSERVATION_SIZE}, 3), got {obs_shape}")
-    rows = int(obs_shape[0])
-    for name, (tail, dtype) in _FRAME_SPECS.items():
-        array = np.asarray(getattr(trial, name))
-        if array.shape != (rows, *tail):
-            raise TrialInvalid(f"{name} must have shape {(rows, *tail)}, got {array.shape}")
-        if array.dtype != dtype:
-            raise TrialInvalid(f"{name} dtype must be {dtype}, got {array.dtype}")
+    state = np.asarray(trial.state)
+    if state.ndim != 2 or state.shape[0] < 1 or state.shape[1] != 5:
+        raise TrialInvalid(f"state must have shape (T+1, 5) with T+1 >= 1, got {state.shape}")
+    if state.dtype != np.dtype(np.float32):
+        raise TrialInvalid(f"state dtype must be float32, got {state.dtype}")
+    if not np.isfinite(state).all():
+        raise TrialInvalid("state must contain only finite values")
     target = np.asarray(trial.target)
     if target.shape != () or target.dtype != np.dtype(np.int8):
         raise TrialInvalid(f"target must be a 0-d int8, got {target.dtype} {target.shape}")
     if int(target) not in (PINK, GREEN):
         raise TrialInvalid(f"target must be {PINK} or {GREEN}, got {int(target)}")
-    poses = np.asarray(trial.target_poses)
+    _check_target_poses(trial.target_poses)
+
+
+def _check_target_poses(value: object) -> None:
+    poses = np.asarray(value)
     if poses.shape != (2, 3) or poses.dtype != np.dtype(np.float32):
         raise TrialInvalid(f"target_poses must be a (2, 3) float32 array, got {poses.dtype} {poses.shape}")
-    _check_values(trial)
-
-
-def _check_values(trial: Trial) -> None:
-    for name in ("state", "action", "coverage", "keypoint", "target_poses"):
-        if not np.isfinite(np.asarray(getattr(trial, name))).all():
-            raise TrialInvalid(f"{name} must contain only finite values")
-    coverage = np.asarray(trial.coverage)
-    if np.any((coverage < 0.0) | (coverage > 1.0)):
-        raise TrialInvalid("coverage must be in [0, 1]")
-    if np.any(np.asarray(trial.n_contacts) < 0):
-        raise TrialInvalid("n_contacts must be non-negative")
-    success = np.asarray(trial.success)
-    if not bool(success[-1]):
-        raise TrialInvalid("success[-1] must be true: only successful trials are written")
-    if np.any(success[:-1]):
-        raise TrialInvalid("success may be true only on the terminal row")
+    if not np.isfinite(poses).all():
+        raise TrialInvalid("target_poses must contain only finite values")
 
 
 def save_trial(data_dir: str | Path, trial: Trial, episode_id: str) -> Path:
     validate_trial(trial)
     path = trial_path(data_dir, int(trial.target), episode_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {name: np.asarray(getattr(trial, name)) for name in TRIAL_ARRAYS}
-    payload["target"] = np.asarray(trial.target)
-    payload["target_poses"] = np.asarray(trial.target_poses)
-    payload["meta"] = np.asarray(json.dumps(asdict(trial.meta), separators=(",", ":"), allow_nan=False))
+    payload = {
+        "state": np.asarray(trial.state),
+        "target": np.asarray(trial.target),
+        "target_poses": np.asarray(trial.target_poses),
+        "meta": np.asarray(json.dumps(asdict(trial.meta), separators=(",", ":"), allow_nan=False)),
+    }
     _write_atomic(path, payload)
     return path
 
@@ -212,15 +202,46 @@ def _write_atomic(path: Path, payload: dict[str, np.ndarray]) -> None:
 def load_trial(path: str | Path) -> Trial:
     location = Path(path)
     arrays, meta_text = _read_arrays(location)
+    meta = _parse_meta(meta_text, location)
+    _require_schema_version(meta, location)
+    return _validate_loaded(Trial(**arrays, meta=meta), location)
+
+
+def load_legacy_trial(path: str | Path) -> Trial:
+    """Convert a v1 raw trial to the v2 state-only format.
+
+    This is the only migration helper: the old ``obs``/``action``/``coverage``/
+    ``success``/``keypoint``/``n_contacts`` members are ignored, and the returned
+    trial carries only the v2 arrays with ``schema_version`` set to 2.
+    """
+    location = Path(path)
+    arrays, meta_text = _read_arrays(location)
+    meta = _legacy_meta(meta_text, location)
+    return _validate_loaded(Trial(**arrays, meta=meta), location)
+
+
+def _legacy_meta(meta_text: str, path: Path) -> TrialMeta:
+    old = _parse_meta(meta_text, path)
+    return TrialMeta(SCHEMA_VERSION, old.seed, old.created_at, old.active_seconds)
+
+
+def _parse_meta(meta_text: str, path: Path) -> TrialMeta:
     try:
-        meta = TrialMeta.from_dict(json.loads(meta_text))
+        return TrialMeta.from_dict(json.loads(meta_text))
     except (json.JSONDecodeError, TypeError, ValueError) as error:
-        raise TrialInvalid(f"trial {location} has invalid meta: {error}") from error
-    trial = Trial(**arrays, meta=meta)
+        raise TrialInvalid(f"trial {path} has invalid meta: {error}") from error
+
+
+def _require_schema_version(meta: TrialMeta, path: Path) -> None:
+    if meta.schema_version != SCHEMA_VERSION:
+        raise TrialInvalid(f"trial {path} has schema_version {meta.schema_version}, expected {SCHEMA_VERSION}")
+
+
+def _validate_loaded(trial: Trial, path: Path) -> Trial:
     try:
         validate_trial(trial)
     except TrialInvalid as error:
-        raise TrialInvalid(f"trial {location} is invalid: {error}") from error
+        raise TrialInvalid(f"trial {path} is invalid: {error}") from error
     return trial
 
 
@@ -264,36 +285,33 @@ def scan_trials(data_dir: str | Path) -> list[TrialRecord]:
 def _read_record(path: Path, expected_target: int) -> TrialRecord:
     try:
         with np.load(path, allow_pickle=False) as archive:
-            missing = [name for name in ("target", "success", "meta") if name not in archive.files]
+            missing = [name for name in ("state", "target", "meta") if name not in archive.files]
             if missing:
                 raise TrialInvalid(f"trial {path} is missing arrays {missing}")
+            state = np.asarray(archive["state"])
             target = np.asarray(archive["target"])
-            success = np.asarray(archive["success"])
             meta_text = _meta_text(archive["meta"], path)
     except TrialInvalid:
         raise
     except Exception as error:
         raise TrialInvalid(f"cannot scan trial {path}: {error}") from error
-    _check_record_scalars(path, target, success, expected_target)
-    try:
-        meta = TrialMeta.from_dict(json.loads(meta_text))
-    except (json.JSONDecodeError, TypeError, ValueError) as error:
-        raise TrialInvalid(f"trial {path} has invalid meta: {error}") from error
+    _check_record_scalars(path, state, target, expected_target)
+    meta = _parse_meta(meta_text, path)
+    _require_schema_version(meta, path)
     return TrialRecord(
         path=path,
         episode_id=path.stem,
         target=int(target),
-        steps=int(success.size) - 1,
-        success=bool(success[-1]),
+        steps=int(state.shape[0]) - 1,
         seed=meta.seed,
         created_at=meta.created_at,
     )
 
 
-def _check_record_scalars(path: Path, target: np.ndarray, success: np.ndarray, expected_target: int) -> None:
+def _check_record_scalars(path: Path, state: np.ndarray, target: np.ndarray, expected_target: int) -> None:
+    if state.ndim != 2 or state.shape[0] < 1 or state.shape[1] != 5 or state.dtype != np.dtype(np.float32):
+        raise TrialInvalid(f"trial {path} state must be a (T+1, 5) float32 array, got {state.dtype} {state.shape}")
     if target.shape != () or target.dtype != np.dtype(np.int8):
         raise TrialInvalid(f"trial {path} target must be a 0-d int8, got {target.dtype} {target.shape}")
     if int(target) != expected_target:
         raise TrialInvalid(f"trial {path} target is {int(target)}, outside its color directory")
-    if success.ndim != 1 or success.size < 1 or success.dtype != np.dtype(np.bool_):
-        raise TrialInvalid(f"trial {path} success must be a non-empty 1-D bool array, got {success.dtype} {success.shape}")

@@ -1,4 +1,4 @@
-"""Raw trial format: save, load, scan, atomicity, and validation."""
+"""Raw v2 trial format: save, load, scan, derived actions, legacy conversion."""
 
 from __future__ import annotations
 
@@ -15,6 +15,8 @@ from tiny_worlds.twin_t.trials import (
     Trial,
     TrialInvalid,
     TrialMeta,
+    derive_actions,
+    load_legacy_trial,
     load_trial,
     save_trial,
     scan_trials,
@@ -34,21 +36,10 @@ def make_trial(
 ) -> Trial:
     rng = np.random.default_rng(seed)
     n_frames = steps + 1
-    action = rng.uniform(0, 512, size=(n_frames, 2)).astype(np.float32)
-    if steps > 0:
-        action[-1] = action[-2]
-    success = np.zeros(n_frames, dtype=np.bool_)
-    success[-1] = True
     return Trial(
-        obs=rng.integers(0, 256, size=(n_frames, 96, 96, 3), dtype=np.uint8),
-        state=rng.normal(size=(n_frames, 5)).astype(np.float32),
-        action=action,
-        coverage=rng.uniform(0, 1, size=(n_frames, 2)).astype(np.float32),
-        success=success,
-        keypoint=rng.normal(size=(n_frames, 9, 2)).astype(np.float32),
-        n_contacts=rng.integers(0, 4, size=(n_frames, 1), dtype=np.int32),
+        state=rng.uniform(0, 512, size=(n_frames, 5)).astype(np.float32),
         target=np.array(target, np.int8),
-        target_poses=rng.normal(size=(2, 3)).astype(np.float32),
+        target_poses=rng.uniform(0, 512, size=(2, 3)).astype(np.float32),
         meta=TrialMeta(SCHEMA_VERSION, seed, created_at, active_seconds),
     )
 
@@ -62,12 +53,25 @@ def test_save_load_round_trip(tmp_path: Path) -> None:
     path = save_trial(tmp_path, trial, "pink_0001")
     assert path == tmp_path / "pink" / "pink_0001.npz"
     loaded = load_trial(path)
-    for name in ("obs", "state", "action", "coverage", "success", "keypoint", "n_contacts", "target", "target_poses"):
-        np.testing.assert_array_equal(getattr(loaded, name), getattr(trial, name), err_msg=name)
+    np.testing.assert_array_equal(loaded.state, trial.state)
+    np.testing.assert_array_equal(loaded.target, trial.target)
+    np.testing.assert_array_equal(loaded.target_poses, trial.target_poses)
     assert loaded.meta == trial.meta
     assert loaded.steps == 3
-    assert loaded.success[-1]
-    np.testing.assert_array_equal(loaded.action[-1], loaded.action[-2])
+
+
+def test_a_raw_trial_has_only_the_v2_keys(tmp_path: Path) -> None:
+    path = save_trial(tmp_path, make_trial(), "keys")
+    with np.load(path, allow_pickle=False) as archive:
+        assert set(archive.files) == {"state", "target", "target_poses", "meta"}
+        for removed in ("obs", "action", "coverage", "success", "keypoint", "n_contacts"):
+            assert removed not in archive.files
+        assert archive["state"].shape == (4, 5)
+        assert archive["state"].dtype == np.float32
+        assert archive["target"].shape == ()
+        assert archive["target"].dtype == np.int8
+        assert archive["target_poses"].shape == (2, 3)
+        assert archive["target_poses"].dtype == np.float32
 
 
 def test_meta_is_a_json_unicode_scalar(tmp_path: Path) -> None:
@@ -77,10 +81,39 @@ def test_meta_is_a_json_unicode_scalar(tmp_path: Path) -> None:
         assert meta_array.shape == ()
         assert meta_array.dtype.kind == "U"
         payload = json.loads(str(meta_array))
-    assert payload["schema_version"] == SCHEMA_VERSION
-    assert payload["seed"] == 11
-    assert payload["created_at"] == CREATED
-    assert payload["active_seconds"] == pytest.approx(0.3)
+    assert payload == {
+        "schema_version": SCHEMA_VERSION,
+        "seed": 11,
+        "created_at": CREATED,
+        "active_seconds": pytest.approx(0.3),
+    }
+
+
+def test_derived_actions_are_the_realized_next_agent_position() -> None:
+    trial = make_trial(steps=4)
+    action = trial.action
+    assert action.shape == (5, 2)
+    assert action.dtype == np.float32
+    np.testing.assert_array_equal(action[:-1], trial.state[1:, :2])
+    np.testing.assert_array_equal(action[-1], trial.state[-1, :2])
+    # The terminal row repeats the final realized position, not the previous state.
+    np.testing.assert_array_equal(action[-1], action[-2])
+    assert not np.array_equal(action[-1], trial.state[-2, :2])
+
+
+def test_derived_actions_handle_a_zero_step_trial() -> None:
+    trial = make_trial(steps=0)
+    assert trial.steps == 0
+    action = trial.action
+    assert action.shape == (1, 2)
+    np.testing.assert_array_equal(action, trial.state[:, :2])
+
+
+def test_derive_actions_does_not_touch_the_state() -> None:
+    state = make_trial().state
+    before = state.copy()
+    derive_actions(state)
+    np.testing.assert_array_equal(state, before)
 
 
 def test_save_leaves_only_the_final_file(tmp_path: Path) -> None:
@@ -117,79 +150,68 @@ def test_trial_path_accepts_a_full_32_byte_id(tmp_path: Path) -> None:
     assert trial_path(tmp_path, PINK, "x" * 32).name == "x" * 32 + ".npz"
 
 
-def _bad_coverage(trial: Trial) -> Trial:
-    coverage = trial.coverage.copy()
-    coverage[0, 0] = 1.5
-    return replace(trial, coverage=coverage)
-
-
-def _negative_coverage(trial: Trial) -> Trial:
-    coverage = trial.coverage.copy()
-    coverage[1, 1] = -0.1
-    return replace(trial, coverage=coverage)
-
-
 def _nan_state(trial: Trial) -> Trial:
     state = trial.state.copy()
     state[0, 3] = np.nan
     return replace(trial, state=state)
 
 
-def _inf_keypoint(trial: Trial) -> Trial:
-    keypoint = trial.keypoint.copy()
-    keypoint[1, 4, 0] = np.inf
-    return replace(trial, keypoint=keypoint)
+def _inf_state(trial: Trial) -> Trial:
+    state = trial.state.copy()
+    state[1, 0] = np.inf
+    return replace(trial, state=state)
 
 
-def _short_success(trial: Trial) -> Trial:
-    return replace(trial, success=trial.success[:-1])
+def _float64_state(trial: Trial) -> Trial:
+    return replace(trial, state=trial.state.astype(np.float64))
 
 
-def _unsuccessful(trial: Trial) -> Trial:
-    success = trial.success.copy()
-    success[-1] = False
-    return replace(trial, success=success)
+def _four_column_state(trial: Trial) -> Trial:
+    return replace(trial, state=np.zeros((3, 4), np.float32))
 
 
-def _early_success(trial: Trial) -> Trial:
-    success = trial.success.copy()
-    success[0] = True
-    return replace(trial, success=success)
-
-
-def _float_obs(trial: Trial) -> Trial:
-    return replace(trial, obs=trial.obs.astype(np.float32))
+def _empty_state(trial: Trial) -> Trial:
+    return replace(trial, state=trial.state[:0])
 
 
 def _bad_target(trial: Trial) -> Trial:
     return replace(trial, target=np.array(2, np.int8))
 
 
+def _int64_target(trial: Trial) -> Trial:
+    return replace(trial, target=np.array(trial.target, np.int64))
+
+
+def _vector_target(trial: Trial) -> Trial:
+    return replace(trial, target=np.array([int(trial.target)], np.int8))
+
+
 def _bad_target_poses(trial: Trial) -> Trial:
     return replace(trial, target_poses=np.zeros((3, 3), np.float32))
 
 
-def _bad_contacts(trial: Trial) -> Trial:
-    return replace(trial, n_contacts=np.zeros(trial.n_contacts.shape[0], np.int32))
+def _float64_target_poses(trial: Trial) -> Trial:
+    return replace(trial, target_poses=trial.target_poses.astype(np.float64))
 
 
-def _bad_obs_size(trial: Trial) -> Trial:
-    return replace(trial, obs=np.zeros((trial.obs.shape[0], 95, 95, 3), np.uint8))
+def _nan_target_poses(trial: Trial) -> Trial:
+    poses = trial.target_poses.copy()
+    poses[1, 2] = np.nan
+    return replace(trial, target_poses=poses)
 
 
 BAD_TRIALS = [
-    pytest.param(_short_success, id="short-success"),
-    pytest.param(_unsuccessful, id="unsuccessful"),
-    pytest.param(_early_success, id="early-success"),
-    pytest.param(_float_obs, id="float-obs"),
-    pytest.param(_bad_coverage, id="coverage-above-one"),
-    pytest.param(_negative_coverage, id="coverage-below-zero"),
     pytest.param(_nan_state, id="nan-state"),
-    pytest.param(_inf_keypoint, id="inf-keypoint"),
+    pytest.param(_inf_state, id="inf-state"),
+    pytest.param(_float64_state, id="float64-state"),
+    pytest.param(_four_column_state, id="four-column-state"),
+    pytest.param(_empty_state, id="empty-state"),
     pytest.param(_bad_target, id="bad-target"),
+    pytest.param(_int64_target, id="int64-target"),
+    pytest.param(_vector_target, id="vector-target"),
     pytest.param(_bad_target_poses, id="bad-target-poses"),
-    pytest.param(_bad_contacts, id="bad-contacts"),
-    pytest.param(_bad_obs_size, id="bad-obs-size"),
+    pytest.param(_float64_target_poses, id="float64-target-poses"),
+    pytest.param(_nan_target_poses, id="nan-target-poses"),
 ]
 
 
@@ -247,6 +269,18 @@ def test_load_accepts_extra_meta_fields(tmp_path: Path) -> None:
     assert loaded.steps == 3
 
 
+def test_load_rejects_the_legacy_schema_version(tmp_path: Path) -> None:
+    path = save_trial(tmp_path, make_trial(), "legacy-version")
+    with np.load(path, allow_pickle=False) as archive:
+        payload = {key: np.array(archive[key]) for key in archive.files}
+    meta = json.loads(str(payload["meta"]))
+    meta["schema_version"] = 1
+    payload["meta"] = np.asarray(json.dumps(meta))
+    np.savez(path, **payload)
+    with pytest.raises(TrialInvalid, match="schema_version"):
+        load_trial(path)
+
+
 def test_scan_trials_across_both_colors(tmp_path: Path) -> None:
     save_trial(tmp_path, make_trial(2, PINK, seed=1), "a")
     save_trial(tmp_path, make_trial(5, GREEN, seed=2), "b")
@@ -256,9 +290,9 @@ def test_scan_trials_across_both_colors(tmp_path: Path) -> None:
     first = records[0]
     assert first.path == tmp_path / "pink" / "a.npz"
     assert first.steps == 2
-    assert first.success is True
     assert first.seed == 1
     assert first.created_at == CREATED
+    assert not hasattr(first, "success")
 
 
 def test_scan_requires_the_directory_color_to_match(tmp_path: Path) -> None:
@@ -273,3 +307,58 @@ def test_scan_requires_the_directory_color_to_match(tmp_path: Path) -> None:
 def test_scan_rejects_a_missing_directory(tmp_path: Path) -> None:
     with pytest.raises(TrialInvalid, match="missing"):
         scan_trials(tmp_path / "missing")
+
+
+def _write_legacy_trial(path: Path, trial: Trial) -> Path:
+    frames = trial.state.shape[0]
+    rng = np.random.default_rng(123)
+    payload = {
+        "obs": rng.integers(0, 256, size=(frames, 96, 96, 3), dtype=np.uint8),
+        "state": trial.state,
+        "action": rng.uniform(0, 512, size=(frames, 2)).astype(np.float32),
+        "coverage": rng.uniform(0, 1, size=(frames, 2)).astype(np.float32),
+        "success": np.zeros(frames, dtype=np.bool_),
+        "keypoint": rng.normal(size=(frames, 9, 2)).astype(np.float32),
+        "n_contacts": rng.integers(0, 4, size=(frames, 1), dtype=np.int32),
+        "target": trial.target,
+        "target_poses": trial.target_poses,
+        "meta": np.asarray(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "seed": trial.meta.seed,
+                    "created_at": trial.meta.created_at,
+                    "active_seconds": trial.meta.active_seconds,
+                }
+            )
+        ),
+    }
+    payload["success"][-1] = True
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(path, **payload)
+    return path
+
+
+def test_load_legacy_trial_converts_a_v1_trial(tmp_path: Path) -> None:
+    original = make_trial(steps=4, seed=9, active_seconds=0.4)
+    path = _write_legacy_trial(tmp_path / "legacy" / "old.npz", original)
+    converted = load_legacy_trial(path)
+    assert converted.meta.schema_version == SCHEMA_VERSION
+    assert converted.meta.seed == original.meta.seed
+    assert converted.meta.created_at == original.meta.created_at
+    assert converted.meta.active_seconds == pytest.approx(original.meta.active_seconds)
+    np.testing.assert_array_equal(converted.state, original.state)
+    np.testing.assert_array_equal(converted.target, original.target)
+    np.testing.assert_array_equal(converted.target_poses, original.target_poses)
+    assert converted.steps == 4
+    assert not hasattr(converted, "obs")
+
+
+def test_load_legacy_trial_is_also_loadable_after_saving(tmp_path: Path) -> None:
+    original = make_trial(steps=2, seed=5)
+    path = _write_legacy_trial(tmp_path / "legacy" / "old.npz", original)
+    converted = load_legacy_trial(path)
+    saved = save_trial(tmp_path / "converted", converted, "round_trip")
+    reloaded = load_trial(saved)
+    assert reloaded.meta == converted.meta
+    np.testing.assert_array_equal(reloaded.state, original.state)

@@ -17,7 +17,7 @@ import numpy as np
 import pygame
 from numpy.typing import NDArray
 
-from .config import TwinTConfig
+from .config import DEFAULT_CONFIG, TwinTConfig
 from .physics import WALL_MAX, WALL_MIN, WALL_RADIUS, apply_pose, tee_shape_vertices
 from .types import FloatArray, UInt8Array
 
@@ -88,6 +88,45 @@ class TwinTRenderer:
 
     def _scale(self, surface: pygame.Surface) -> float:
         return surface.get_width() / self._config.workspace
+
+
+def render_frames(states: NDArray[np.floating], target_poses: NDArray[np.floating], size: int) -> UInt8Array:
+    """Render a state trajectory at ``size``; ``target_poses`` is ``(2, 3)`` or ``(T, 2, 3)``."""
+    rows = _check_states(states)
+    poses = _check_target_poses(target_poses, rows.shape[0])
+    renderer = TwinTRenderer(DEFAULT_CONFIG)
+    try:
+        frames = [renderer.render(size, _scene(row, pose)) for row, pose in zip(rows, poses, strict=True)]
+    finally:
+        renderer.close()
+    return np.stack(frames)
+
+
+def render_frame(state: NDArray[np.floating], target_poses: NDArray[np.floating], size: int) -> UInt8Array:
+    """Render one ``[agent_x, agent_y, block_x, block_y, block_angle]`` frame at ``size``."""
+    return render_frames(np.asarray(state)[None, :], target_poses, size)[0]
+
+
+def _check_states(states: NDArray[np.floating]) -> FloatArray:
+    rows = np.asarray(states, dtype=np.float32)
+    if rows.ndim != 2 or rows.shape[0] < 1 or rows.shape[1] != 5:
+        raise ValueError(f"states must have shape (T, 5) with T >= 1, got {rows.shape}")
+    if not np.isfinite(rows).all():
+        raise ValueError("states must be finite")
+    return rows
+
+
+def _check_target_poses(target_poses: NDArray[np.floating], frames: int) -> FloatArray:
+    poses = np.asarray(target_poses, dtype=np.float32)
+    if poses.shape == (2, 3):
+        return np.broadcast_to(poses, (frames, 2, 3))
+    if poses.shape == (frames, 2, 3):
+        return poses
+    raise ValueError(f"target_poses must have shape (2, 3) or ({frames}, 2, 3), got {poses.shape}")
+
+
+def _scene(state: NDArray[np.floating], target_poses: NDArray[np.floating]) -> Scene:
+    return Scene(agent_pos=state[:2], block_pose=state[2:5], target_poses=target_poses)
 
 
 def _lighten(color: Color) -> Color:

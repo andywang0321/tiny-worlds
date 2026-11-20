@@ -35,9 +35,7 @@ class Layout:
     target_poses: FloatArray
 
 
-def parse_state(
-    state: NDArray[np.floating], config: TwinTConfig
-) -> tuple[FloatArray, FloatArray]:
+def parse_state(state: NDArray[np.floating], config: TwinTConfig) -> tuple[FloatArray, FloatArray]:
     """Parse a held-out five-vector; overlaps are allowed, walls are not."""
     vector = _as_float_array(state, (5,), "state")
     agent_pos, block_pose = vector[:2].copy(), vector[2:].copy()
@@ -48,9 +46,7 @@ def parse_state(
     return agent_pos, block_pose
 
 
-def parse_target_poses(
-    target_poses: NDArray[np.floating], config: TwinTConfig
-) -> FloatArray:
+def parse_target_poses(target_poses: NDArray[np.floating], config: TwinTConfig) -> FloatArray:
     """Parse explicit target poses and require two non-overlapping T's in the walls."""
     poses = _as_float_array(target_poses, (2, 3), "target_poses")
     polygons = [tee_polygon(pose, config.block_scale) for pose in poses]
@@ -115,9 +111,7 @@ def _sample_targets(rng: np.random.Generator, config: TwinTConfig) -> FloatArray
     raise TwinTSamplingError(f"could not sample targets in {MAX_ATTEMPTS} attempts")
 
 
-def _sample_targets_once(
-    rng: np.random.Generator, config: TwinTConfig
-) -> FloatArray | None:
+def _sample_targets_once(rng: np.random.Generator, config: TwinTConfig) -> FloatArray | None:
     low_x, low_y, high_x, high_y = config.target_bounds
     centers = rng.uniform((low_x, low_y), (high_x, high_y), size=(2, 2))
     if np.linalg.norm(centers[0] - centers[1]) < config.target_min_separation:
@@ -137,9 +131,7 @@ def _targets_valid(poses: FloatArray, config: TwinTConfig) -> bool:
     return polygons[0].intersection(polygons[1]).area <= 0.0
 
 
-def _sample_block_pose(
-    rng: np.random.Generator, config: TwinTConfig, target_poses: FloatArray
-) -> FloatArray:
+def _sample_block_pose(rng: np.random.Generator, config: TwinTConfig, target_poses: FloatArray) -> FloatArray:
     for _ in range(MAX_ATTEMPTS):
         low_x, low_y, high_x, high_y = config.block_bounds
         center = rng.uniform((low_x, low_y), (high_x, high_y))
@@ -150,9 +142,7 @@ def _sample_block_pose(
     raise TwinTSamplingError(f"could not sample a block in {MAX_ATTEMPTS} attempts")
 
 
-def _block_valid(
-    block_pose: FloatArray, target_poses: FloatArray, config: TwinTConfig
-) -> bool:
+def _block_valid(block_pose: FloatArray, target_poses: FloatArray, config: TwinTConfig) -> bool:
     if not inside_walls(tee_polygon(block_pose, config.block_scale)):
         return False
     return not _block_overlaps_targets(block_pose, target_poses, config)

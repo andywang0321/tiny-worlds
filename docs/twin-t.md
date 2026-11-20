@@ -21,7 +21,7 @@ uv add --editable "../tiny-worlds[twin-t]"
 | control | 10 Hz, 10 physics substeps of 0.01 s |
 | action | agent target position in `[0, 512]^2` |
 | success | block covers the commanded target at least 95% |
-| observation | 96 x 96 RGB plus the agent's 2D position |
+| observation | live env only: 96 x 96 RGB plus the agent's 2D position |
 
 Target poses are sampled with geometric centers in `(90, 90, 422, 422)`, a minimum
 center separation of 180, and a continuous orientation in `[-pi, pi]`, the same range as
@@ -50,7 +50,8 @@ obs, info = env.reset(seed=0, command=0)  # 0 pink, 1 green, None null
 obs, reward, terminated, truncated, info = env.step(action)
 ```
 
-- `obs.pixels` is `(96, 96, 3)` uint8 and `obs.agent_pos` is `(2,)` float32.
+- `obs.pixels` is `(96, 96, 3)` uint8 and `obs.agent_pos` is `(2,)` float32. The
+  observation size is a live-environment render choice, not part of the dataset format.
 - `info` is a `StepInfo`: block pose, eight block keypoints, target poses, coverage for
   both targets, `command_success`, `task_success`, `achieved_target`, contacts, step.
 - `terminate_on="task"` ends on either target (evaluation default).
@@ -71,66 +72,108 @@ step), applied as a velocity clamp inside the environment so collection and eval
 have the same dynamics. PushT itself has no explicit cap; this is a TwinT addition for
 data quality.
 
-## Raw trial format
+## Raw trial format (v2, state-only)
 
 One successful trial is one uncompressed `.npz` under `data/pink/` or `data/green/`.
-Every per-frame array has the same first dimension `T + 1`, where `T` is the number of
-executed control actions. The last row is the terminal success frame; its action is a
-copy of the last executed action, so the training pair at row `t < T` remains
-`(obs[t], action[t])`.
+The file is a few KB and holds only the simulator state, the per-episode targets, and
+metadata. Every array has first dimension `T + 1`, where `T` is the number of executed
+control steps; `T + 1` is the number of stored frames including the initial one.
 
 | key | shape | dtype | meaning |
 |---|---|---|---|
-| `obs` | `(T+1, 96, 96, 3)` | uint8 | observation at each step |
 | `state` | `(T+1, 5)` | float32 | `[agent_x, agent_y, block_x, block_y, block_angle]` |
-| `action` | `(T+1, 2)` | float32 | pointer target; last row copied |
-| `coverage` | `(T+1, 2)` | float32 | coverage of `[pink, green]` |
-| `success` | `(T+1,)` | bool | true only on the terminal frame |
-| `keypoint` | `(T+1, 9, 2)` | float32 | eight block corners + agent center |
-| `n_contacts` | `(T+1, 1)` | int32 | contact points in the step |
-| `target` | `()` | int8 | commanded color |
-| `target_poses` | `(2, 3)` | float32 | `[pink, green]` poses |
-| `meta` | `()` | unicode | JSON string: schema version, seed, created, steps, active seconds |
+| `target` | `()` | int8 | commanded color, 0 pink or 1 green |
+| `target_poses` | `(2, 3)` | float32 | `[pink, green]` T body poses |
+| `meta` | `()` | unicode | JSON: `schema_version`, `seed`, `created_at`, `active_seconds` |
 
-Write to a temporary file in the same directory, flush, then `os.replace` into place.
-A crash cannot leave a half-written trial with a final name. A successful trial is
-written immediately; a discarded trial is not written.
+There are no stored images, actions, coverage, success, keypoints, or contact counts.
+The collector writes only successful trials; a discarded trial is not written.
 
-## Packed zarr format
+**Actions are derived, never stored.** For an episode with rows `t = 0..T`:
 
-`pack` writes one `twint.zarr.zip`. The zip is a zarr v2 store with the zarr keys at its
-root, so `zarr.storage.ZipStore` can open it directly. Each chunk uses zstd.
-
-```text
-data/img          (N, 96, 96, 3) uint8
-data/state        (N, 5) float32
-data/action       (N, 2) float32
-data/coverage     (N, 2) float32
-data/success      (N,) bool
-data/keypoint     (N, 9, 2) float32
-data/n_contacts   (N, 1) int32
-data/target       (N,) int8
-data/target_poses (N, 2, 3) float32
-meta/episode_ends   (E,) int64
-meta/episode_target (E,) int8
-meta/episode_success(E,) bool
-meta/episode_steps  (E,) int32
-meta/episode_ids    (E,) S32
-meta/episode_created(E,) float64    unix seconds
-meta/episode_seed   (E,) int64
-meta/split          (E,) int8      0 train, 1 validation, 2 test
+```python
+action[:-1] = state[1:, :2]
+action[-1] = state[-1, :2]
 ```
 
-`meta/episode_ends` is cumulative over rows, so `N = episode_ends[-1]`.
-`meta/episode_steps` counts executed actions, one less than the row count. Splits are
-stratified by target color, 80/10/10, with seed 0, and stored so the test split is
-fixed. Root attributes record schema version, colors, bounds, threshold, fps, source,
-creation time, and split seed.
+The agent is a kinematic body with a speed cap, so `state[t+1, :2]` is exactly the
+realized pointer target and is the correct BC target. The final row copies the terminal
+agent position so `action` has the same `T + 1` rows as `state`.
 
-`load_dataset(path)` opens a `.zarr.zip` lazily and exposes arrays, `episode(i)`,
-`episodes(split)`, `episode_count`, and `frame_count`. `unpack(zarr_path, out_dir)`
-writes the raw per-trial `.npz` files back out. `pack_trials(data_dir, out_path)` is the
-inverse.
+Write to a temporary file in the same directory, flush, fsync, then `os.replace` into
+place. A crash cannot leave a half-written trial with a final name.
+
+## Packed dataset (v2)
+
+`pack_trials(data_dir, out_path)` writes one compressed `dist/twint.npz`. The whole
+dataset is about 3 MB for 1,000 trials, so the plain `.npz` needs no lazy chunking layer
+and loads in one eager pass. It is written with `np.savez_compressed` to a temporary
+path, fsynced, then `os.replace`d.
+
+```text
+state                 (N, 5) float32
+episode_ends          (E,) int64      cumulative row ends
+episode_target        (E,) int8
+episode_target_poses  (E, 2, 3) float32
+episode_ids           (E,) S32
+episode_created       (E,) float64    unix seconds
+episode_seed          (E,) int64
+split                 (E,) int8       0 train, 1 validation
+meta                  () unicode      JSON root metadata
+```
+
+`N == episode_ends[-1]`; each episode's rows are `state[start:end]`. `meta` records
+`schema_version`, `fps`, `target_colors`, `target_bounds`, `target_min_separation`,
+`success_threshold`, `created_at`, `source`, `split_seed`, `n_episodes`, `n_frames`, and
+`episode_counts`. It deliberately does not record an observation size.
+
+**Splits are 90/10 train/validation, stratified by target color.** For each color, the
+file shuffles that color's episode indices with `default_rng(split_seed)` and assigns
+the first `int(n * 0.9)` to train and the rest to validation. Downstream training keeps
+using the validation split for monitoring and checkpoint selection.
+`PackSummary.warnings` reports a color whose train or validation split is empty.
+
+## Loading and rendering
+
+```python
+from tiny_worlds.twin_t import load_dataset, render_frame, render_frames, unpack
+
+with load_dataset("dist/twint.npz") as dataset:
+    print(dataset.episode_count, dataset.frame_count)
+    episode = dataset.episode(0)
+    print(episode.state.shape, episode.action.shape)
+    frames = episode.frames(96)  # (steps + 1, 96, 96, 3) uint8, rendered on demand
+    for train_episode in dataset.episodes(0):
+        ...
+
+single = render_frame(episode.state[0], episode.target_poses, 96)
+batch = render_frames(episode.state, episode.target_poses, 224)
+```
+
+`load_dataset(path)` eagerly loads every member of the `.npz` into numpy arrays and
+validates the episode ends, shapes, dtypes, id count, and labels. `state`,
+`episode_ends`, `episode_target`, `episode_target_poses`, `episode_ids`,
+`episode_created`, `episode_seed`, and `split` are the stored members. For downstream
+convenience, `dataset.action` derives per-episode actions, while `dataset.target` and
+`dataset.target_poses` broadcast the per-episode labels to one value per frame. An
+`Episode` exposes `state`, `action`, `target`, `target_poses`, `episode_id`, `split`,
+`steps`, and `frames(size)`.
+
+`render_frames(states, target_poses, size)` renders a whole trajectory with one reusable
+renderer; `target_poses` may be `(2, 3)` (broadcast over frames) or `(T, 2, 3)`.
+`render_frame(state, target_poses, size)` renders a single frame. Rendering 224px from
+state reproduces the same scene the 96px live observation was sampled from.
+
+`unpack(packed_path, out_dir)` writes the raw v2 per-trial `.npz` files back out;
+`pack_trials` is its inverse.
+
+## Legacy conversion
+
+`load_legacy_trial(path)` reads a v1 raw trial (which also contains `obs`, `action`,
+`coverage`, `success`, `keypoint`, and `n_contacts`), ignores those removed arrays, and
+returns a v2 `Trial` with `schema_version` set to 2 and the original seed, creation time,
+and active seconds preserved. It is the only migration helper; `load_trial` rejects v1
+files.
 
 ## Acceptance tests
 
@@ -140,6 +183,10 @@ inverse.
   wrong target is task success but not command success.
 - The observation contains pixels and agent position only.
 - The speed cap holds over a fast pointer path.
-- A raw trial round-trips through `save_trial`/`load_trial`.
-- `pack_trials` -> `load_dataset` -> `unpack` round-trips arrays, episode ends, labels,
-  and splits.
+- `render_frames` reproduces the live environment's 96px observations from state alone.
+- A raw v2 trial round-trips through `save_trial`/`load_trial`; actions follow the
+  derived rule including the terminal copy.
+- `pack_trials` -> `load_dataset` -> `unpack` round-trips state, episode ends, labels,
+  poses, ids, and splits; 70 + 70 trials split 63/7 per color (train/validation),
+  126/14 overall.
+- A synthetic v1 trial converts to v2 through `load_legacy_trial`.

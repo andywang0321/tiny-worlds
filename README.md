@@ -48,17 +48,22 @@ print(obs.pixels.shape, obs.agent_pos, info.coverage, info.target_poses)
 obs, reward, terminated, truncated, info = env.step([256.0, 300.0])
 frame = env.render()  # 512x512x3 uint8
 
-pack_trials(Path("data"), Path("dist/twint.zarr.zip"))
-with load_dataset(Path("dist/twint.zarr.zip")) as dataset:
+pack_trials(Path("data"), Path("dist/twint.npz"))
+with load_dataset(Path("dist/twint.npz")) as dataset:
     print(dataset.episode_count, dataset.frame_count, dataset.split[:])
-unpack(Path("dist/twint.zarr.zip"), Path("unpacked"))
+    episode = dataset.episode(0)
+    print(episode.state.shape, episode.action.shape, episode.frames(96).shape)
+unpack(Path("dist/twint.npz"), Path("unpacked"))
 ```
 
-TwinT runs at 10 Hz with a 96x96 RGB observation plus the agent position and a
-512x512 workspace. The policy observation contains only pixels and the agent position;
-block pose, target poses, coverage, and success are evaluation-only. The full contract,
-including the raw `.npz` trial format and the packed zarr v2 schema, is in
-[docs/twin-t.md](docs/twin-t.md).
+TwinT runs at 10 Hz with a 512x512 workspace. The live environment still renders a 96x96
+RGB observation plus the agent position, but the dataset is state-only: each raw trial
+stores the agent/block `state`, the per-episode `target` and `target_poses`, and
+metadata. Actions are derived as the realized next agent position, and frames are
+rendered on demand at any size. The packed distribution is one compressed
+`dist/twint.npz` (about 3 MB for 1,000 trials) with a 90/10 train/validation split
+stratified by target color. The full contract, including the raw
+`.npz` trial format, is in [docs/twin-t.md](docs/twin-t.md).
 
 The `twint-data-collector` project is the browser teleop front end that writes the raw
 trials and runs `uv run pack`.

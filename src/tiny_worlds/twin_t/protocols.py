@@ -34,9 +34,7 @@ class TwinTEnvironment(Protocol):
         """
         ...
 
-    def step(
-        self, action: NDArray[np.floating]
-    ) -> tuple[TwinTObservation, float, bool, bool, StepInfo]:
+    def step(self, action: NDArray[np.floating]) -> tuple[TwinTObservation, float, bool, bool, StepInfo]:
         """Take one control step."""
         ...
 

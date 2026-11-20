@@ -67,9 +67,7 @@ def apply_pose(pose: NDArray[np.floating], points: NDArray[np.floating]) -> Floa
     return world.astype(np.float32)
 
 
-def pose_from_center(
-    center: NDArray[np.floating], angle: float, scale: float
-) -> FloatArray:
+def pose_from_center(center: NDArray[np.floating], angle: float, scale: float) -> FloatArray:
     """Convert a geometric center and angle to a T body pose."""
     offset = rotate(local_centroid(scale)[None, :], angle)[0]
     return np.array(
@@ -164,9 +162,7 @@ class PhysicsWorld:
     def _add_block(self) -> tuple[pymunk.Body, list[pymunk.Poly]]:
         scale = self._config.block_scale
         bar, stem = tee_shape_vertices(scale)
-        inertia = pymunk.moment_for_poly(BLOCK_MASS, vertices=bar) + pymunk.moment_for_poly(
-            BLOCK_MASS, vertices=stem
-        )
+        inertia = pymunk.moment_for_poly(BLOCK_MASS, vertices=bar) + pymunk.moment_for_poly(BLOCK_MASS, vertices=stem)
         body = pymunk.Body(BLOCK_MASS, inertia)
         shapes = [pymunk.Poly(body, bar), pymunk.Poly(body, stem)]
         for shape in shapes:
@@ -192,9 +188,7 @@ class PhysicsWorld:
         self.space.step(self._config.physics_dt)
         self.contact_points = 0
 
-    def step_control(
-        self, action: NDArray[np.floating], substeps: int, max_agent_speed: float
-    ) -> None:
+    def step_control(self, action: NDArray[np.floating], substeps: int, max_agent_speed: float) -> None:
         """Run one PD-controlled control step."""
         target = pymunk.Vec2d(float(action[0]), float(action[1]))
         self.contact_points = 0
@@ -202,9 +196,7 @@ class PhysicsWorld:
             self._substep(target, max_agent_speed)
 
     def _substep(self, target: pymunk.Vec2d, max_agent_speed: float) -> None:
-        acceleration = K_P * (target - self.agent.position) + K_V * (
-            pymunk.Vec2d(0.0, 0.0) - self.agent.velocity
-        )
+        acceleration = K_P * (target - self.agent.position) + K_V * (pymunk.Vec2d(0.0, 0.0) - self.agent.velocity)
         velocity = self.agent.velocity + acceleration * self._config.physics_dt
         speed = velocity.length
         if speed > max_agent_speed:

@@ -1,17 +1,14 @@
-"""Packed zarr format: streaming packer, stratification, and zip layout."""
+"""Packed TwinT ``.npz`` format: packer, root metadata, splits, and derived arrays."""
 
 from __future__ import annotations
 
 import hashlib
 import json
-import zipfile
 from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 import pytest
-import zarr
-from zarr.storage import ZipStore
 
 from tiny_worlds.twin_t.config import DEFAULT_CONFIG
 from tiny_worlds.twin_t.dataset import load_dataset
@@ -19,13 +16,16 @@ from tiny_worlds.twin_t.pack import PackError, PackSummary, pack_trials
 from tiny_worlds.twin_t.schema import (
     FPS,
     GREEN,
-    OBSERVATION_SIZE,
+    PACKED_ARRAYS,
     PINK,
     SCHEMA_VERSION,
+    SPLIT_FRACTIONS,
+    SPLIT_TRAIN,
+    SPLIT_VALIDATION,
     SUCCESS_THRESHOLD,
     TARGET_COLORS,
 )
-from tiny_worlds.twin_t.trials import Trial, TrialInvalid, TrialMeta, save_trial
+from tiny_worlds.twin_t.trials import Trial, TrialInvalid, TrialMeta, derive_actions, save_trial
 
 CREATED = "2025-01-02T03:04:05Z"
 CREATED_TS = datetime.fromisoformat(CREATED).timestamp()
@@ -33,21 +33,10 @@ CREATED_TS = datetime.fromisoformat(CREATED).timestamp()
 
 def make_trial(steps: int, target: int, *, seed: int) -> Trial:
     rng = np.random.default_rng(seed)
-    n_frames = steps + 1
-    action = rng.uniform(0, 512, size=(n_frames, 2)).astype(np.float32)
-    action[-1] = action[-2]
-    success = np.zeros(n_frames, dtype=np.bool_)
-    success[-1] = True
     return Trial(
-        obs=rng.integers(0, 256, size=(n_frames, 96, 96, 3), dtype=np.uint8),
-        state=rng.normal(size=(n_frames, 5)).astype(np.float32),
-        action=action,
-        coverage=rng.uniform(0, 1, size=(n_frames, 2)).astype(np.float32),
-        success=success,
-        keypoint=rng.normal(size=(n_frames, 9, 2)).astype(np.float32),
-        n_contacts=rng.integers(0, 4, size=(n_frames, 1), dtype=np.int32),
+        state=rng.uniform(0, 512, size=(steps + 1, 5)).astype(np.float32),
         target=np.array(target, np.int8),
-        target_poses=rng.normal(size=(2, 3)).astype(np.float32),
+        target_poses=rng.uniform(0, 512, size=(2, 3)).astype(np.float32),
         meta=TrialMeta(SCHEMA_VERSION, seed, CREATED, steps / FPS),
     )
 
@@ -67,88 +56,70 @@ def packed(tmp_path: Path) -> tuple[Path, Path, list[Trial], PackSummary]:
     data_dir = tmp_path / "data"
     trials = [write_trial(data_dir, PINK, f"p{index:02d}", 2 + index % 4, index) for index in range(10)]
     trials += [write_trial(data_dir, GREEN, f"g{index:02d}", 2 + index % 4, 100 + index) for index in range(10)]
-    zip_path = tmp_path / "out" / "twint.zarr.zip"
-    summary = pack_trials(data_dir, zip_path)
-    return zip_path, data_dir, trials, summary
-
-
-def split_of(zip_path: Path) -> np.ndarray:
-    with load_dataset(zip_path) as dataset:
-        return np.array(dataset.split[:])
+    out_path = tmp_path / "out" / "twint.npz"
+    summary = pack_trials(data_dir, out_path)
+    return out_path, data_dir, trials, summary
 
 
 def test_pack_load_round_trip(packed: tuple[Path, Path, list[Trial], PackSummary]) -> None:
-    zip_path, _, trials, summary = packed
+    out_path, _, trials, summary = packed
     assert summary.n_episodes == 20
     assert summary.n_frames == sum(trial.steps + 1 for trial in trials)
     assert summary.target_counts == {"pink": 10, "green": 10}
-    assert summary.split_counts == {"train": 16, "validation": 2, "test": 2}
+    assert summary.split_counts == {"train": 18, "validation": 2}
     assert summary.warnings == ()
-    assert summary.out_path == zip_path
-    assert summary.sha256 == hashlib.sha256(zip_path.read_bytes()).hexdigest()
+    assert summary.out_path == out_path
+    assert summary.sha256 == hashlib.sha256(out_path.read_bytes()).hexdigest()
 
-    with load_dataset(zip_path) as dataset:
+    with load_dataset(out_path) as dataset:
         assert dataset.episode_count == 20
         assert dataset.frame_count == summary.n_frames
-        np.testing.assert_array_equal(dataset.img[:], concatenate(trials, "obs"))
-        np.testing.assert_array_equal(dataset.state[:], concatenate(trials, "state"))
-        np.testing.assert_array_equal(dataset.action[:], concatenate(trials, "action"))
-        np.testing.assert_array_equal(dataset.coverage[:], concatenate(trials, "coverage"))
-        np.testing.assert_array_equal(dataset.success[:], concatenate(trials, "success"))
-        np.testing.assert_array_equal(dataset.keypoint[:], concatenate(trials, "keypoint"))
-        np.testing.assert_array_equal(dataset.n_contacts[:], concatenate(trials, "n_contacts"))
-        expected_target = np.concatenate(
-            [np.full(trial.steps + 1, int(trial.target), np.int8) for trial in trials]
-        )
+        np.testing.assert_array_equal(dataset.state, concatenate(trials, "state"))
+        np.testing.assert_array_equal(dataset.action, _all_actions(trials))
+        np.testing.assert_array_equal(dataset.episode_ends, np.cumsum([trial.steps + 1 for trial in trials]))
+        np.testing.assert_array_equal(dataset.episode_target, [int(trial.target) for trial in trials])
+        np.testing.assert_array_equal(dataset.episode_target_poses, [trial.target_poses for trial in trials])
+        expected_target = np.concatenate([np.full(trial.steps + 1, int(trial.target), np.int8) for trial in trials])
         expected_poses = np.concatenate(
             [np.broadcast_to(trial.target_poses, (trial.steps + 1, 2, 3)) for trial in trials]
         )
-        np.testing.assert_array_equal(dataset.target[:], expected_target)
-        np.testing.assert_array_equal(dataset.target_poses[:], expected_poses)
-        np.testing.assert_array_equal(dataset.episode_ends[:], np.cumsum([trial.steps + 1 for trial in trials]))
-        np.testing.assert_array_equal(dataset.episode_target[:], [int(trial.target) for trial in trials])
-        assert dataset.episode_success[:].all()
-        np.testing.assert_array_equal(dataset.episode_steps[:], [trial.steps for trial in trials])
-        stored_ids = [value.rstrip(b"\x00") for value in dataset.episode_ids[:].tolist()]
+        np.testing.assert_array_equal(dataset.target, expected_target)
+        np.testing.assert_array_equal(dataset.target_poses, expected_poses)
+        stored_ids = [value.rstrip(b"\x00") for value in dataset.episode_ids.tolist()]
         expected_ids = [f"p{index:02d}".encode() for index in range(10)]
         expected_ids += [f"g{index:02d}".encode() for index in range(10)]
         assert stored_ids == expected_ids
-        np.testing.assert_allclose(dataset.episode_created[:], CREATED_TS)
-        np.testing.assert_array_equal(dataset.episode_seed[:], [trial.meta.seed for trial in trials])
+        np.testing.assert_allclose(dataset.episode_created, CREATED_TS)
+        np.testing.assert_array_equal(dataset.episode_seed, [trial.meta.seed for trial in trials])
 
 
-def test_zip_is_a_zarr_v2_store_at_the_root(packed: tuple[Path, Path, list[Trial], PackSummary]) -> None:
-    zip_path = packed[0]
-    with zipfile.ZipFile(zip_path) as archive:
-        names = archive.namelist()
-        assert {name.split("/", 1)[0] for name in names} == {".zgroup", ".zattrs", "data", "meta"}
-        assert ".zgroup" in names
-        assert "data/img/.zarray" in names
-        assert "meta/episode_ends/.zarray" in names
-        assert json.loads(archive.read(".zgroup"))["zarr_format"] == 2
-        image_meta = json.loads(archive.read("data/img/.zarray"))
-        assert image_meta["compressor"]["id"] == "zstd"
-        assert image_meta["compressor"]["level"] == 5
-        assert image_meta["chunks"][0] == 1
-        ids_meta = json.loads(archive.read("meta/episode_ids/.zarray"))
-        assert ids_meta["dtype"] == "|S32"
-        assert ids_meta["compressor"]["id"] == "zstd"
+def _all_actions(trials: list[Trial]) -> np.ndarray:
+    return np.concatenate([derive_actions(trial.state) for trial in trials])
 
 
-def test_the_zip_is_the_only_output(packed: tuple[Path, Path, list[Trial], PackSummary]) -> None:
-    zip_path = packed[0]
-    out_dir = zip_path.parent
-    assert [entry.name for entry in out_dir.iterdir()] == [zip_path.name]
-    assert not any(entry.name.endswith(".zarr") or entry.name.endswith(".tmp") for entry in out_dir.rglob("*"))
+def test_packed_file_has_only_the_v2_members(packed: tuple[Path, Path, list[Trial], PackSummary]) -> None:
+    out_path = packed[0]
+    with np.load(out_path, allow_pickle=False) as archive:
+        assert set(archive.files) == set(PACKED_ARRAYS)
+        assert archive["state"].shape == (packed[3].n_frames, 5)
+        assert archive["state"].dtype == np.float32
+        assert archive["episode_ends"].dtype == np.int64
+        assert archive["episode_target"].dtype == np.int8
+        assert archive["episode_target_poses"].shape == (20, 2, 3)
+        assert archive["episode_ids"].dtype == np.dtype("S32")
+        assert archive["episode_created"].dtype == np.float64
+        assert archive["episode_seed"].dtype == np.int64
+        assert archive["split"].dtype == np.int8
+        assert archive["meta"].shape == ()
+        assert archive["meta"].dtype.kind == "U"
+        for removed in ("obs", "action", "coverage", "success", "keypoint", "n_contacts"):
+            assert removed not in archive.files
 
 
-def test_root_attributes(packed: tuple[Path, Path, list[Trial], PackSummary]) -> None:
-    zip_path, data_dir, _, summary = packed
-    store = ZipStore(zip_path, mode="r")
-    try:
-        attrs = dict(zarr.open_group(store, mode="r").attrs)
-    finally:
-        store.close()
+def test_root_metadata(packed: tuple[Path, Path, list[Trial], PackSummary]) -> None:
+    out_path, data_dir, _, summary = packed
+    with load_dataset(out_path) as dataset:
+        attrs = dataset.metadata
     required = {
         "schema_version",
         "fps",
@@ -156,7 +127,6 @@ def test_root_attributes(packed: tuple[Path, Path, list[Trial], PackSummary]) ->
         "target_bounds",
         "target_min_separation",
         "success_threshold",
-        "observation_size",
         "created_at",
         "source",
         "split_seed",
@@ -164,14 +134,14 @@ def test_root_attributes(packed: tuple[Path, Path, list[Trial], PackSummary]) ->
         "n_frames",
         "episode_counts",
     }
-    assert required <= set(attrs)
+    assert set(attrs) == required
     assert attrs["schema_version"] == SCHEMA_VERSION
     assert attrs["fps"] == FPS
     assert attrs["target_colors"] == [list(color) for color in TARGET_COLORS]
     assert attrs["target_bounds"] == list(DEFAULT_CONFIG.target_bounds)
     assert attrs["target_min_separation"] == DEFAULT_CONFIG.target_min_separation
     assert attrs["success_threshold"] == SUCCESS_THRESHOLD
-    assert attrs["observation_size"] == OBSERVATION_SIZE
+    assert "observation_size" not in attrs
     assert attrs["source"] == str(data_dir)
     assert attrs["split_seed"] == 0
     assert attrs["n_episodes"] == summary.n_episodes
@@ -182,35 +152,61 @@ def test_root_attributes(packed: tuple[Path, Path, list[Trial], PackSummary]) ->
     json.dumps(attrs)
 
 
-def test_splits_partition_the_data_and_are_stratified(packed: tuple[Path, Path, list[Trial], PackSummary]) -> None:
-    zip_path = packed[0]
-    with load_dataset(zip_path) as dataset:
-        split = np.array(dataset.split[:])
-        targets = np.array(dataset.episode_target[:])
-    groups = [set(np.where(split == code)[0].tolist()) for code in range(3)]
-    assert set().union(*groups) == set(range(20))
-    assert sum(len(group) for group in groups) == 20
+def test_the_packed_file_is_the_only_output(packed: tuple[Path, Path, list[Trial], PackSummary]) -> None:
+    out_path = packed[0]
+    out_dir = out_path.parent
+    assert [entry.name for entry in out_dir.iterdir()] == [out_path.name]
+    assert not any(entry.name.endswith(".tmp") for entry in out_dir.rglob("*"))
+
+
+def test_splits_are_stratified_ninety_ten(packed: tuple[Path, Path, list[Trial], PackSummary]) -> None:
+    out_path = packed[0]
+    with load_dataset(out_path) as dataset:
+        split = np.array(dataset.split)
+        targets = np.array(dataset.episode_target)
+    assert set(split.tolist()) == {SPLIT_TRAIN, SPLIT_VALIDATION}
     for color in (PINK, GREEN):
         codes, counts = np.unique(split[targets == color], return_counts=True)
-        assert dict(zip(codes.tolist(), counts.tolist(), strict=True)) == {0: 8, 1: 1, 2: 1}
+        assert dict(zip(codes.tolist(), counts.tolist(), strict=True)) == {SPLIT_TRAIN: 9, SPLIT_VALIDATION: 1}
+
+
+def test_split_counts_for_seventy_trials_per_colour(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    for index in range(70):
+        write_trial(data_dir, PINK, f"p{index:03d}", 1, index)
+        write_trial(data_dir, GREEN, f"g{index:03d}", 1, 1000 + index)
+    summary = pack_trials(data_dir, tmp_path / "twint.npz")
+    assert summary.split_counts == {"train": 126, "validation": 14}
+    with load_dataset(summary.out_path) as dataset:
+        split = np.array(dataset.split)
+        targets = np.array(dataset.episode_target)
+    for color in (PINK, GREEN):
+        counts = np.bincount(split[targets == color], minlength=2)
+        assert counts.tolist() == [63, 7]
+    assert int(split.size * SPLIT_FRACTIONS[SPLIT_TRAIN]) == 126
 
 
 def test_splits_are_deterministic_for_a_seed(packed: tuple[Path, Path, list[Trial], PackSummary]) -> None:
     _, data_dir, _, _ = packed
     out_dir = data_dir.parent
-    first = pack_trials(data_dir, out_dir / "split_a.zip", split_seed=3)
-    second = pack_trials(data_dir, out_dir / "split_b.zip", split_seed=3)
-    other = pack_trials(data_dir, out_dir / "split_c.zip", split_seed=5)
+    first = pack_trials(data_dir, out_dir / "split_a.npz", split_seed=3)
+    second = pack_trials(data_dir, out_dir / "split_b.npz", split_seed=3)
+    other = pack_trials(data_dir, out_dir / "split_c.npz", split_seed=4)
     assert first.split_counts == second.split_counts
-    np.testing.assert_array_equal(split_of(first.out_path), split_of(second.out_path))
-    assert not np.array_equal(split_of(first.out_path), split_of(other.out_path))
+    np.testing.assert_array_equal(_split_of(first.out_path), _split_of(second.out_path))
+    assert not np.array_equal(_split_of(first.out_path), _split_of(other.out_path))
+
+
+def _split_of(path: Path) -> np.ndarray:
+    with load_dataset(path) as dataset:
+        return np.array(dataset.split)
 
 
 def test_overwrite_false_refuses_an_existing_output(
     packed: tuple[Path, Path, list[Trial], PackSummary], tmp_path: Path
 ) -> None:
     _, data_dir, _, _ = packed
-    out_path = tmp_path / "existing.zip"
+    out_path = tmp_path / "existing.npz"
     out_path.write_bytes(b"keep")
     with pytest.raises(PackError, match="exists"):
         pack_trials(data_dir, out_path)
@@ -222,8 +218,8 @@ def test_overwrite_false_refuses_an_existing_output(
 def test_tiny_data_warns_about_empty_splits(tmp_path: Path) -> None:
     data_dir = tmp_path / "data"
     write_trial(data_dir, PINK, "only", 2, 0)
-    summary = pack_trials(data_dir, tmp_path / "tiny.zip")
-    assert summary.split_counts == {"train": 0, "validation": 0, "test": 1}
+    summary = pack_trials(data_dir, tmp_path / "tiny.npz")
+    assert summary.split_counts == {"train": 0, "validation": 1}
     assert any("pink" in warning and "train" in warning for warning in summary.warnings)
 
 
@@ -234,20 +230,19 @@ def test_invalid_trial_fails_closed_without_output(
     bad_path = data_dir / "pink" / "p00.npz"
     with np.load(bad_path, allow_pickle=False) as archive:
         payload = {key: np.array(archive[key]) for key in archive.files}
-    payload["state"] = payload["state"][:-1]
+    payload["state"][0, 0] = np.nan
     np.savez(bad_path, **payload)
-    out_path = tmp_path / "failed" / "twint.zarr.zip"
+    out_path = tmp_path / "failed" / "twint.npz"
     with pytest.raises(TrialInvalid, match="p00.npz"):
         pack_trials(data_dir, out_path)
     assert not out_path.exists()
-    assert not any(entry.name.endswith(".zarr") for entry in tmp_path.rglob("*"))
 
 
 def test_episode_id_longer_than_32_bytes_is_rejected(tmp_path: Path) -> None:
     data_dir = tmp_path / "data"
     path = save_trial(data_dir, make_trial(2, PINK, seed=0), "short")
     path.rename(path.with_name("x" * 33 + ".npz"))
-    out_path = tmp_path / "long.zip"
+    out_path = tmp_path / "long.npz"
     with pytest.raises(PackError, match="32"):
         pack_trials(data_dir, out_path)
     assert not out_path.exists()
@@ -257,10 +252,10 @@ def test_pack_rejects_an_empty_data_directory(tmp_path: Path) -> None:
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     with pytest.raises(PackError, match="no trials"):
-        pack_trials(data_dir, tmp_path / "empty.zip")
+        pack_trials(data_dir, tmp_path / "empty.npz")
 
 
-def test_out_path_must_be_a_zip(packed: tuple[Path, Path, list[Trial], PackSummary], tmp_path: Path) -> None:
+def test_out_path_must_be_an_npz(packed: tuple[Path, Path, list[Trial], PackSummary], tmp_path: Path) -> None:
     _, data_dir, _, _ = packed
-    with pytest.raises(PackError, match="zip"):
+    with pytest.raises(PackError, match="npz"):
         pack_trials(data_dir, tmp_path / "store.zarr")

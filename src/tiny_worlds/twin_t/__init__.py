@@ -4,6 +4,7 @@ from .config import COLLECTOR_CONFIG, DEFAULT_CONFIG, TwinTConfig
 from .dataset import DatasetInvalid, Episode, TwinTDataset, UnpackError, load_dataset, unpack
 from .env import TwinTEnv
 from .pack import PackError, PackSummary, pack_trials
+from .render import render_frame, render_frames
 from .sampling import TwinTSamplingError
 from .schema import GREEN, PINK, SCHEMA_VERSION, TARGET_COLORS, TARGET_NAMES
 from .trials import (
@@ -11,6 +12,7 @@ from .trials import (
     TrialInvalid,
     TrialMeta,
     TrialRecord,
+    load_legacy_trial,
     load_trial,
     save_trial,
     scan_trials,
@@ -44,8 +46,11 @@ __all__ = [
     "TwinTState",
     "UnpackError",
     "load_dataset",
+    "load_legacy_trial",
     "load_trial",
     "pack_trials",
+    "render_frame",
+    "render_frames",
     "save_trial",
     "scan_trials",
     "trial_path",

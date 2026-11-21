@@ -1,5 +1,6 @@
 """TwinT: two colored T targets, one T block, and a circular pusher."""
 
+from .augment import Mirror, Symmetry, augment_trial, relocate_non_target, symmetries
 from .config import COLLECTOR_CONFIG, DEFAULT_CONFIG, TwinTConfig
 from .dataset import DatasetInvalid, Episode, TwinTDataset, UnpackError, load_dataset, unpack
 from .env import TwinTEnv
@@ -31,9 +32,11 @@ __all__ = [
     "Command",
     "DatasetInvalid",
     "Episode",
+    "Mirror",
     "PackError",
     "PackSummary",
     "StepInfo",
+    "Symmetry",
     "Trial",
     "TrialInvalid",
     "TrialMeta",
@@ -45,14 +48,17 @@ __all__ = [
     "TwinTSamplingError",
     "TwinTState",
     "UnpackError",
+    "augment_trial",
     "load_dataset",
     "load_legacy_trial",
     "load_trial",
     "pack_trials",
+    "relocate_non_target",
     "render_frame",
     "render_frames",
     "save_trial",
     "scan_trials",
+    "symmetries",
     "trial_path",
     "unpack",
 ]

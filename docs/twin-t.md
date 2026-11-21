@@ -167,6 +167,75 @@ state reproduces the same scene the 96px live observation was sampled from.
 `unpack(packed_path, out_dir)` writes the raw v2 per-trial `.npz` files back out;
 `pack_trials` is its inverse.
 
+## Symmetry augmentation
+
+The task is invariant under the dihedral group of the square and under swapping the two
+target colors. The world is square, the agent is a disc, the block and targets are rigid
+T's, the physics is isotropic, and the targets are visual-only (the block does not collide
+with them). Rotating or reflecting the whole state therefore leaves the dynamics
+unchanged; swapping the two colors only relabels which target is commanded. These are
+exact label-preserving symmetries, not new behaviors.
+
+The 16 transforms are `8 dihedral elements x 2 color swaps`. Each is a
+`Symmetry(rotation, mirror, swap_colors)`:
+
+- `rotation` is 0..3 counter-clockwise quarter turns about the workspace centre `W/2`.
+- `mirror` is `"x"` (`x -> W - x`, vertical centre line), `"y"` (`y -> W - y`,
+  horizontal centre line), or `None`. `"y"` equals `rotation=2` composed with `"x"`, so
+  `symmetries()` lists only `None` and `"x"`.
+- `swap_colors` reverses `target_poses` and flips `target` (`0 <-> 1`). The block and
+  agent are unchanged, so the pushed geometric pose moves to the other color index and
+  command success is preserved.
+
+Poses are `[x, y, angle]` and state is
+`[agent_x, agent_y, block_x, block_y, block_angle]`. A mirror reflects positions and maps
+the T angle to `-theta` (`"x"`) or `pi - theta` (`"y"`); a quarter turn rotates positions
+about `W/2` and adds `k * pi / 2` to angles. Angles are wrapped to `[-pi, pi)` and arrays
+stay float32. The mirror is applied first, then the rotation, then the color swap.
+
+```python
+import numpy as np
+from tiny_worlds.twin_t import Symmetry, augment_trial, load_trial, save_trial, symmetries
+
+trial = load_trial("data/pink/p0001.npz")
+for symmetry in symmetries():  # 16 transforms, identity first
+    augmented = augment_trial(trial, symmetry)
+    save_trial("data-aug", augmented, f"p0001_{symmetry.name}")
+
+state, target, poses = Symmetry(rotation=1, mirror="x", swap_colors=True).apply(
+    trial.state, trial.target, trial.target_poses
+)
+```
+
+`augment_trial` returns a valid v2 `Trial`: `meta` is preserved, `state` and
+`target_poses` are transformed, `target` is flipped when required, and `action` stays
+derived from the transformed state.
+
+`relocate_non_target(state, target, target_poses, rng, ...)` is a separate helper that
+resamples only the non-commanded target. It keeps the commanded pose, block, and agent
+fixed, samples a geometric centre in `target_bounds` with an angle in
+`target_angle_range`, and rejects a candidate that is closer than
+`target_min_separation` to the commanded target, leaves the walls, overlaps the other
+target, is covered by the block at least 50% at any frame, or overlaps the agent at any
+frame. It is deterministic given `rng` and raises `ValueError` after `attempts` failures.
+
+The thin CLI writes one file per `(trial, symmetry)`:
+
+```bash
+uv run --all-extras python scripts/augment_trials.py --data data --out data-aug --symmetries all
+```
+
+**Training-only.** These transforms relabel existing scenes. They add no new long-tail
+behaviors and must not be applied to validation or evaluation; keep evaluation on the
+unaugmented split.
+
+Two geometric caveats are worth recording. The frozen transform uses the workspace
+centre `W/2 = 256`, while the wall inset is `5..506`, centred at 255.5; this half-unit
+offset is far below the task scale. The renderer also rasterizes polygons at integer
+pixel coordinates, so a re-rendered symmetric scene can differ from a pixel transform of
+the original along object outlines even though the object interiors match exactly. The
+tests verify the axis and rotation conventions with a one-pixel rasterization tolerance.
+
 ## Legacy conversion
 
 `load_legacy_trial(path)` reads a v1 raw trial (which also contains `obs`, `action`,
@@ -190,3 +259,8 @@ files.
   poses, ids, and splits; 70 + 70 trials split 63/7 per color (train/validation),
   126/14 overall.
 - A synthetic v1 trial converts to v2 through `load_legacy_trial`.
+- The 16 symmetries preserve pairwise distances and per-target coverage, and the renderer
+  confirms the mirror axes and rotation sign; augmented trials validate, round-trip, and
+  keep the derived action rule.
+- `relocate_non_target` is deterministic, keeps the commanded scene fixed, respects the
+  target bounds and separation, and rejects block or agent overlap.

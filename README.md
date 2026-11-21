@@ -65,5 +65,23 @@ rendered on demand at any size. The packed distribution is one compressed
 stratified by target color. The full contract, including the raw
 `.npz` trial format, is in [docs/twin-t.md](docs/twin-t.md).
 
+The v2 format also makes exact task-symmetry augmentation cheap: 16 label-preserving
+transforms (8 dihedral elements x 2 target-color swaps) act on `state` and
+`target_poses`, frames are re-rendered, and actions stay derived. `augment_trial(trial,
+symmetry)` returns a valid `Trial`; `symmetries()` enumerates all 16. These are
+training-only relabelings, not new data, and must never be used at evaluation.
+
+```python
+from tiny_worlds.twin_t import augment_trial, load_trial, symmetries
+
+trial = load_trial("data/pink/p0001.npz")
+augmented = [augment_trial(trial, symmetry) for symmetry in symmetries()]
+```
+
+`scripts/augment_trials.py --data data --out data-aug --symmetries all` writes the
+augmented trial files. See the
+[Symmetry augmentation](docs/twin-t.md#symmetry-augmentation) section for the transform
+math and caveats.
+
 The `twint-data-collector` project is the browser teleop front end that writes the raw
 trials and runs `uv run pack`.
